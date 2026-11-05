@@ -1,0 +1,190 @@
+#!/bin/bash
+# Runs in the box's primary terminal, before its chosen harness.
+set -eu
+state_dir="$HOME/.local/state/discobox-tour"
+if [[ ${1-} != --replay && -f "$state_dir/completed" ]]; then
+  exit 0
+fi
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+visited=' '
+request_id=''
+trap 'printf "\nTour interrupted. Your harness has not started.\n"; exit 130' INT
+trap 'exit 143' TERM
+pause() {
+  printf '\nPress Enter to return to the menu. '
+  IFS= read -r _ || exit 1
+}
+cat <<'TEXT'
+Hi! Welcome to Discobox.
+
+You are inside a box: your own workspace for an agent and its tools.
+This menu runs before your selected harness. No agent account is needed
+for the tour; signing in comes when you choose to continue.
+
+Press Enter to begin. (Ctrl-C leaves you at a shell.)
+TEXT
+IFS= read -r _ || exit 1
+while :; do
+  printf '\nDiscobox tour — choose something to try\n'
+  for chapter in '1 What this box is' '2 Open a shell' '3 Tools' '4 Secrets and requests' '5 Harnesses' '6 Leaving and returning'; do
+    mark=' '; number=${chapter%% *}
+    if [[ $visited == *" $number "* ]]; then mark='x'; fi
+    printf '  [%s] %s\n' "$mark" "$chapter"
+  done
+  printf '  c  Continue to my harness\n  q  Exit tour (stay at a shell)\n\nChoice: '
+  IFS= read -r choice || exit 1
+  case "$choice" in
+    1)
+      cat <<'TEXT'
+
+A box has its own Linux environment, home directory and copied source.
+Commands here run in the box, not on your host machine. Your agent will
+work here too. Stopping and restarting keeps your work. Detaching leaves
+programs running; idle boxes can power off automatically.
+
+Try the other chapters in any order. No production credentials are needed.
+Commits made here do not change your original checkout. Push work to a
+Git remote before archiving; a box is not your only backup.
+TEXT
+      printf '\nThis tour checkout: %s\n' "$root"
+      pause
+      ;;
+    2)
+      cat <<'TEXT'
+
+Press Ctrl-A, release it, then s to open a shell beside this menu.
+In that shell run:
+
+  printf 'Hello from my box!\n' > tour-note.txt
+  cat tour-note.txt
+  git status --short
+
+That file is a harmless change in this box's copy. It is yours to keep
+or remove with: rm tour-note.txt
+
+Type exit to close the extra shell, or click this menu's pane to return.
+The extra shell bypasses the tour, so this menu stays where you left it.
+TEXT
+      pause
+      ;;
+    3)
+      cat <<'TEXT'
+
+Press Ctrl-A, release it, then o to open the tools picker.
+Choose an available in-box tool, such as the Git viewer, and try it.
+Close the tool to return here. Escape closes the picker without choosing.
+
+The picker also offers host editors when configured. VS Code or Zed runs
+on your machine and connects to this box; using an editor is optional.
+If no suitable tool is installed, you can still finish this tour.
+TEXT
+      pause
+      ;;
+    4)
+      cat <<'TEXT'
+
+A secret stays outside the box. An approved credential normally appears
+as a stand-in (sentinel); the egress uses the real value only on approved
+routes. Review the requested host, path and method before approving.
+
+Let's make a real request for a disposable demo credential. In the host
+inbox, approve using a credential named discobox-tour whose value is
+just tour-example-only, or deny the request to see that path instead.
+Do not choose an account token. No network call uses this demo value.
+The only requested route is GET tour.discobox.invalid/demo.
+
+Press Ctrl-A then g to open the inbox when the request appears.
+You may deny it and still finish the tour. No delegation is requested.
+TEXT
+      if [[ -z $request_id ]]; then
+        printf '\nCreate the demo request? [y/N] '
+        IFS= read -r answer || exit 1
+        if [[ $answer != y && $answer != Y ]]; then continue; fi
+        mkdir -p -- "$state_dir"
+        result=$(discobox-access request --name discobox-tour --env-var DISCOBOX_TOUR_TOKEN \
+          --route 'GET tour.discobox.invalid/demo' --ttl 10m \
+          --justification 'Learn approval or denial using the disposable value tour-example-only; no account token and no network call' \
+          2>"$state_dir/access-error") || { cat "$state_dir/access-error"; pause; continue; }
+        read -r request_id _ <<< "$result"
+      fi
+      printf '\nDemo request: %s\n' "$request_id"
+      printf 'Answer it in the inbox, then press Enter to check.\n'
+      printf 'Or press Enter now to return and check later. '
+      IFS= read -r _ || exit 1
+      wait_status=0
+      wait_output=$(discobox-access wait --timeout 1s request "$request_id" \
+        2>"$state_dir/access-error") || wait_status=$?
+      if [[ -n $wait_output ]]; then
+        printf '%s\n' "$wait_output"
+      elif (( wait_status != 0 )); then
+        cat "$state_dir/access-error"
+      fi
+      printf '\nIf still pending, deny it in the inbox when done. Reopening this chapter\nchecks the same request. This protocol has no requester-side cancellation.\n'
+      pause
+      ;;
+    5)
+      cat <<'TEXT'
+
+Your harness is the program you selected before opening this box.
+Choose Continue to my harness when ready. An agent may ask you to sign
+in; the shell harness simply returns to a shell. The tour needs neither
+an agent subscription nor a sign-in.
+
+Sign in and adjust agent settings inside a box. When the green changes
+to save band appears, press Ctrl-A then H to review what will be saved
+for future boxes. Review carefully before saving or discarding.
+
+To try a different harness later, stop a box and use its settings in the
+console. Discobox configure selects the default for future boxes. This
+tour does not change your default or stop your current box.
+TEXT
+      pause
+      ;;
+    6)
+      cat <<'TEXT'
+
+Try detaching: press Ctrl-A, release it, then d.
+On your host, run discobox ls to find this box, then:
+
+  discobox attach BOX
+
+Replace BOX with its name or identifier. You return to this same menu.
+Detaching does not stop the box. From your host you can explicitly use:
+
+  discobox stop BOX
+  discobox start BOX
+
+Before Continue, a new primary launch shows the menu again. After
+Continue, a durable marker skips the tour on later starts of this box.
+To replay without starting another harness, open a shell and run:
+
+  .discobox/scripts/pre-harness --replay
+
+When finished, collect any work, then run on your host:
+
+  discobox rm BOX
+
+This archives the box. The tour never archives it for you.
+TEXT
+      pause
+      ;;
+    c|C)
+      mkdir -p -- "$state_dir"
+      touch -- "$state_dir/completed"
+      if [[ ${1-} == --replay ]]; then
+        printf '\nTour complete. Returning to your shell.\n'
+      else
+        printf '\nTour complete. Continuing to your selected harness.\n'
+      fi
+      exit 0
+      ;;
+    q|Q)
+      printf '\nTour exited. Your harness has not started.\n'
+      if [[ -n $request_id ]]; then printf 'Deny any pending demo request in the host inbox.\n'; fi
+      printf 'Replay with: .discobox/scripts/pre-harness --replay\n'
+      exit 1
+      ;;
+    *) printf '\nChoose 1–6, c, or q.\n'; continue ;;
+  esac
+  if [[ $visited != *" $choice "* ]]; then visited+="$choice "; fi
+done
